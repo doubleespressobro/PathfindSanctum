@@ -3,6 +3,11 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Linq;
 using ExileCore;
+using ExileCore.PoEMemory;
+using ExileCore.PoEMemory.Components;
+using ExileCore.PoEMemory.MemoryObjects;
+using ExileCore.Shared.Enums;
+using SharpDX;
 
 namespace BetterSanctum;
 
@@ -15,6 +20,26 @@ public class BetterSanctumPlugin : BaseSettingsPlugin<BetterSanctumSettings>
 
     public override void Render()
     {
+        // METEORS
+        DebugWindow.LogError($"START RENDER");
+        var entityList = GameController?.EntityListWrapper?.ValidEntitiesByType[EntityType.Effect].Where(x => x.Metadata.Contains("/Effects/Effect")) ?? Enumerable.Empty<Entity>();
+
+        foreach (var entity in entityList)
+        {
+            DebugWindow.LogError($"ENTITY FOUND");
+            entity.TryGetComponent<Animated>(out var animatedComp);
+            if (animatedComp == null) continue;
+
+            DebugWindow.LogError($"animatedComp FOUND");
+            System.Numerics.Vector2 entityPos = RemoteMemoryObject.pTheGame.IngameState.Camera.WorldToScreen(entity.PosNum);
+
+            if (animatedComp.BaseAnimatedObjectEntity.Metadata.Contains("League_Sanctum/hazards/hazard_meteor"))
+            {
+                Graphics.DrawTextWithBackground("Meteor", entityPos, Color.Red, FontAlign.Center, Color.Black);
+                Graphics.DrawCircleInWorld(entity.PosNum, 120.0f, Color.Red, 5.0f);
+            }
+        }
+
         var floorWindow = GameController.IngameState.IngameUi.SanctumFloorWindow;
         if (!floorWindow.IsVisible)
         {
