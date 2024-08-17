@@ -21,30 +21,6 @@ public class BetterSanctumPlugin : BaseSettingsPlugin<BetterSanctumSettings>
     private bool dataCalculated;
     private List<(int, int)> bestPath;
 
-    private void DrawCircleInWorldPos(bool drawFilledCircle, Vector3 position, float radius, int thickness, Color color)
-    {
-        RectangleF screensize = new RectangleF()
-        {
-            X = 0,
-            Y = 0,
-            Width = GameController.Window.GetWindowRectangleTimeCache.Size.Width,
-            Height = GameController.Window.GetWindowRectangleTimeCache.Size.Height
-        };
-
-        Vector2 entityPos = RemoteMemoryObject.pTheGame.IngameState.Camera.WorldToScreen(position);
-        if (IsEntityWithinScreen(entityPos, screensize, 50))
-        {
-            if (drawFilledCircle)
-            {
-                Graphics.DrawFilledCircleInWorld(position, radius, color);
-            }
-            else
-            {
-                Graphics.DrawCircleInWorld(position, radius, color, thickness);
-            }
-        }
-    }
-
     private bool IsEntityWithinScreen(Vector2 entityPos, RectangleF screensize, float allowancePX)
     {
         // Check if the entity position is within the screen bounds with allowance
@@ -72,9 +48,8 @@ public class BetterSanctumPlugin : BaseSettingsPlugin<BetterSanctumSettings>
 
             if (animatedComp.BaseAnimatedObjectEntity.Metadata.Contains("League_Sanctum/hazards/hazard_meteor"))
             {
-                DebugWindow.LogMsg("Found meteor entity at " + entity.PosNum.ToString());
                 Graphics.DrawTextWithBackground("Meteor", entityPos, Color.Red, FontAlign.Center, Color.Black);
-                DrawCircleInWorldPos(false, entity.PosNum, 120.0f, 5, Color.Red);
+                Graphics.DrawCircleInWorld(entity.PosNum, 120.0f, Color.Red, 5);
             }
         }
 
