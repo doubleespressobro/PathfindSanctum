@@ -39,17 +39,14 @@ public class BetterSanctumPlugin : BaseSettingsPlugin<BetterSanctumSettings>
 
         foreach (var entity in entityList)
         {
-            entity.TryGetComponent<Animated>(out var animatedComp);
-            if (animatedComp == null) continue;
-            if (animatedComp.BaseAnimatedObjectEntity == null) continue;
-            if (animatedComp.BaseAnimatedObjectEntity.Metadata == null) continue;
+            if (!(entity.TryGetComponent<Animated>(out var animatedComp) && animatedComp != null && animatedComp.BaseAnimatedObjectEntity != null && animatedComp.BaseAnimatedObjectEntity.Metadata != null)) continue;
 
             var entityPos = RemoteMemoryObject.pTheGame.IngameState.Camera.WorldToScreen(entity.PosNum);
 
             if (animatedComp.BaseAnimatedObjectEntity.Metadata.Contains("League_Sanctum/hazards/hazard_meteor"))
             {
                 Graphics.DrawTextWithBackground("Meteor", entityPos, Color.Red, FontAlign.Center, Color.Black);
-                Graphics.DrawCircleInWorld(entity.PosNum, 120.0f, Color.Red, 5);
+                Graphics.DrawCircleInWorld(entity.PosNum, 140.0f, Color.Red, 5);
             }
         }
 
