@@ -167,7 +167,7 @@ public class PathFinder
         }
     }
 
-    public void CreateRoomWeightMap()
+    public void CreateRoomWeightMap(bool render = true)
     {
         for (var layerIndex = roomsByLayer.Count - 1; layerIndex >= 0; layerIndex--)
         {
@@ -178,12 +178,12 @@ public class PathFinder
 
                 int numConnections = roomLayout[layerIndex][roomIndex].Length;
 
-                roomWeightMap[(layerIndex, roomIndex)] = CalculateRoomWeight(room, layerIndex, numConnections);
+                roomWeightMap[(layerIndex, roomIndex)] = CalculateRoomWeight(room, layerIndex, numConnections, render);
             }
         }
     }
 
-    private int CalculateRoomWeight(SanctumRoomElement room, int roomLayerIndex, int numConnections)
+    private int CalculateRoomWeight(SanctumRoomElement room, int roomLayerIndex, int numConnections, bool render = true)
     {
         int roomWeight = 1000000; // Base weight
 
@@ -302,7 +302,7 @@ public class PathFinder
         {
             Vector2 weightTextPosition = new Vector2(room.GetClientRectCache.TopLeft.X, room.GetClientRectCache.TopLeft.Y);
             DrawTextWithBackground(playerText + debugText, weightTextPosition, Core.Settings.TextColor, Core.Settings.BackgroundColor); // You can customize the color
-        } else
+        } else if (render)
         {
             Vector2 weightTextPosition = new Vector2(room.GetClientRectCache.TopLeft.X, room.GetClientRectCache.TopLeft.Y);
             DrawTextWithBackground(playerText, weightTextPosition, Core.Settings.TextColor, Core.Settings.BackgroundColor); // You can customize the color
@@ -311,7 +311,7 @@ public class PathFinder
         return roomWeight;
     }
 
-    private static int CalculateFloorNumber(string bossId)
+    public int CalculateFloorNumber(string bossId)
     {
         if (bossId == "Cellar_Boss_1_1")
         {
