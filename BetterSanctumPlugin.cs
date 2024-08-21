@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Net;
 using System.Runtime.InteropServices;
 using System.Text.RegularExpressions;
 using ExileCore;
@@ -14,11 +15,14 @@ using ExileCore.PoEMemory.FilesInMemory;
 using ExileCore.PoEMemory.MemoryObjects;
 using ExileCore.PoEMemory.Models;
 using ExileCore.Shared.Enums;
+using GameOffsets.Native;
+using GameOffsets;
 using ImGuiNET;
 using SharpDX;
 using static System.Windows.Forms.VisualStyles.VisualStyleElement;
 using Vector2 = System.Numerics.Vector2;
 using Vector3 = System.Numerics.Vector3;
+using ExileCore.PoEMemory.FilesInMemory.Sanctum;
 
 namespace BetterSanctum;
 
@@ -182,36 +186,18 @@ public class BetterSanctumPlugin : BaseSettingsPlugin<BetterSanctumSettings>
         public string Name;
         public int Count;
         public double Value;
-    };
-    public class CurrencyData
-    {
-        public bool IsShard;
-        public int StackSize = 1;
-        public int MaxStackSize = 0;
-    }
-
-    public class CustomItem
-    {
-        public string BaseName;
-        public int ItemType;
-        public Element Element;
-
-        public CurrencyData CurrencyInfo { get; set; } = new CurrencyData();
     }
 
     private void DrawRewards()
     {
-        bool usingDivinity = GameController.IngameState.Data.MapStats.Any(x => x.Key.ToString() == "MapLycia2DuplicateUpToXDeferredRewards");
+        var gameState = GameController.IngameState;
+        bool usingDivinity = gameState.Data.MapStats.Any(x => x.Key.ToString() == "MapLycia2DuplicateUpToXDeferredRewards");
 
-        var sanctumRewardwindow = GameController.IngameState.IngameUi.SanctumRewardWindow;
-        if (!sanctumRewardwindow.IsVisible)
+        var sanctumRewardWindow = gameState.IngameUi.SanctumRewardWindow;
+        if (!sanctumRewardWindow.IsVisible || sanctumRewardWindow.RewardElements.Count == 0 || sanctumRewardWindow.RewardElements[0].ChildCount >= 3)
             return;
 
-        // they use the fucking "reward" window for affliction pact
-        if (sanctumRewardwindow.RewardElements.Count == 0 || sanctumRewardwindow.RewardElements[0].ChildCount >= 3)
-            return;
-
-        SanctumFloorWindow floorWindow = GameController.IngameState.IngameUi.SanctumFloorWindow;
+        var floorWindow = gameState.IngameUi.SanctumFloorWindow;
         if (floorWindow == null)
             return;
 
@@ -223,19 +209,43 @@ public class BetterSanctumPlugin : BaseSettingsPlugin<BetterSanctumSettings>
             pathFinder = new PathFinder(this);
 
         var floor = pathFinder.CalculateFloorNumber(bossId);
+        var rewardValues = GetRewardValues(sanctumRewardWindow.RewardElements);
 
-        Dictionary<Element, Reward> rewardValues = new Dictionary<Element, Reward>();
+        DrawDivinityText(usingDivinity, sanctumRewardWindow.PositionNum, floor);
 
-        foreach (var reward in sanctumRewardwindow.RewardElements)
+        if (usingDivinity)
+        {
+            if (floor <= 2)
+            {
+                DrawRewardsForFloors1And2(rewardValues, sanctumRewardWindow, floor);
+            }
+            else if (floor == 3)
+            {
+                DrawRewardsForFloor3(rewardValues, sanctumRewardWindow, floorWindow);
+            }
+            else if (floor == 4)
+            {
+                DrawRewardsForFloor4(rewardValues, sanctumRewardWindow, floorWindow);
+            }
+        }
+        else
+        {
+            DrawRewardsForNoDivinity(rewardValues, sanctumRewardWindow, floor);
+        }
+    }
+
+    private Dictionary<Element, Reward> GetRewardValues(IEnumerable<Element> rewardElements)
+    {
+        var rewardValues = new Dictionary<Element, Reward>();
+
+        foreach (var reward in rewardElements)
         {
             var match = Regex.Match(reward.Children[1].Text, @"(Receive)\s((?'rewardcount'(\d+))x(?'rewardname'.*))\s(right now|at the end of the next Floor|at the end of the Floor|on completing the Sanctum)$");
             if (!match.Success)
                 continue;
 
             var rewardName = match.Groups["rewardname"].Value.Trim();
-            var rewardCount = match.Groups["rewardcount"].ValueSpan.Trim();
-
-            if (!int.TryParse(rewardCount, out var stackSize))
+            if (!int.TryParse(match.Groups["rewardcount"].ValueSpan.Trim(), out var stackSize))
                 continue;
 
             var data = new BaseItemType
@@ -246,298 +256,225 @@ public class BetterSanctumPlugin : BaseSettingsPlugin<BetterSanctumSettings>
             };
 
             var fn = GameController.PluginBridge.GetMethod<Func<BaseItemType, double>>("NinjaPrice.GetBaseItemTypeValue");
-
             if (fn == null)
                 continue;
 
             var value = fn(data) * stackSize;
-
             rewardValues.Add(reward, new Reward { Name = rewardName, Count = stackSize, Value = value });
         }
 
-        if (usingDivinity)
+        return rewardValues;
+    }
+
+    private bool IsInPactRoom(SanctumFloorWindow floorWindow, PathFinder pathFinder)
+    {
+        var currentRoom = floorWindow.RoomsByLayer[pathFinder.playerLayerIndex][pathFinder.playerRoomIndex];
+        return currentRoom?.Data?.RewardRoom?.Id.Contains("_Deal") ?? false;
+    }
+
+
+    private void DrawDivinityText(bool usingDivinity, Vector2 position, int floor)
+    {
+        string text = usingDivinity ? "Divinity Detected" : "No Divinity Detected";
+        Graphics.DrawText(text, position - new Vector2(100, 40), Color.White, 45, FontAlign.Center);
+    }
+
+    private void DrawRewardsForFloors1And2(Dictionary<Element, Reward> rewardValues, SanctumRewardWindow sanctumRewardWindow, int floor)
+    {
+        var bestReward = GetBestReward(rewardValues, sanctumRewardWindow.RewardElements.Last().Address);
+        DrawRewardElements(rewardValues, bestReward, sanctumRewardWindow, floor);
+    }
+
+    private void DrawRewardsForFloor3(Dictionary<Element, Reward> rewardValues, SanctumRewardWindow sanctumRewardWindow, SanctumFloorWindow floorWindow)
+    {
+        var bestReward = DetermineBestRewardForFloor3(rewardValues, sanctumRewardWindow, floorWindow);
+        DrawRewardElements(rewardValues, bestReward, sanctumRewardWindow, 3);
+    }
+
+    private void DrawRewardsForFloor4(Dictionary<Element, Reward> rewardValues, SanctumRewardWindow sanctumRewardWindow, SanctumFloorWindow floorWindow)
+    {
+        var (divCounter, pactCounter, path, rewardsWeCanTake) = CalculateFloor4Metrics(floorWindow);
+
+        DrawFloor4InfoText(sanctumRewardWindow.PositionNum, pactCounter, rewardsWeCanTake, divCounter);
+
+        if (divCounter <= 1 && rewardsWeCanTake >= 1 && !IsInPactRoom(floorWindow, pathFinder))
         {
-            Graphics.DrawText("Divinity Detected", sanctumRewardwindow.PositionNum - new Vector2(100, 40), Color.White, 45, FontAlign.Center);
-
-            if (floor <= 2)
-            {
-                var bestReward = rewardValues.Where(x => x.Key.Address != sanctumRewardwindow.RewardElements.Last().Address)
-                    .OrderByDescending(x => x.Value.Value).FirstOrDefault();
-
-                var otherRewards = rewardValues.Where(x => x.Key.Address != bestReward.Key.Address).Select(x => x.Value)
-                .OrderByDescending(x => x.Value).ToList();
-
-                foreach (var reward in rewardValues)
-                {
-                    var rewardPos = reward.Key.Children[1].GetClientRectCache;
-
-                    if (reward.Key.Address == bestReward.Key.Address)
-                    {
-                        Graphics.DrawBox(rewardPos, Color.DarkGreen);
-                        Graphics.DrawText($"TAKE THIS", rewardPos.Center - new SharpDX.Vector2(0, 7), Color.White, 45, FontAlign.Center);
-                        Graphics.DrawText($"{reward.Value.Count}x {reward.Value.Name} ({reward.Value.Value})", rewardPos.Center + new SharpDX.Vector2(0, 8), Color.White, 45, FontAlign.Center);
-
-                    }
-                    else if (reward.Key.Address != rewardValues.Last().Key.Address)
-                    {
-                        Graphics.DrawBox(rewardPos, Color.DarkRed);
-                        Graphics.DrawText($"DONT TAKE", rewardPos.Center - new SharpDX.Vector2(0, 7), Color.White, 45, FontAlign.Center);
-                        Graphics.DrawText($"{reward.Value.Count}x {reward.Value.Name}", rewardPos.Center + new SharpDX.Vector2(0, 8), Color.White, 45, FontAlign.Center);
-                    }
-                    else
-                    {
-                        Graphics.DrawBox(rewardPos, Color.DarkRed);
-                        Graphics.DrawText($"THIS IS FLOOR {floor}...", rewardPos.Center - new SharpDX.Vector2(0, 10), Color.White, 45, FontAlign.Center);
-                        Graphics.DrawText($"DONT TAKE LAST REWARD", rewardPos.Center + new SharpDX.Vector2(0, 5), Color.White, 45, FontAlign.Center);
-                        Graphics.DrawText($"{reward.Value.Count}x {reward.Value.Name}", rewardPos.Center + new SharpDX.Vector2(0, 20), Color.White, 45, FontAlign.Center);
-                    }
-                }
-            }
-            else if (floor == 3)
-            {
-                KeyValuePair<Element, Reward> bestReward = new KeyValuePair<Element, Reward>();
-
-                if (floorWindow.FloorData.RoomChoices.Count == 8)
-                {
-                    if (rewardValues.All(x => !x.Value.Name.Contains("Divine")))
-                    {
-                        bestReward = rewardValues.Where(x => x.Key.Address == sanctumRewardwindow.RewardElements.First().Address)
-                            .OrderByDescending(x => x.Value.Value).FirstOrDefault();
-                    }
-                    else
-                    {
-                        bestReward = rewardValues.OrderByDescending(x => x.Value.Value).FirstOrDefault();
-                    }
-                }
-                else
-                {
-                    bestReward = rewardValues.Where(x => x.Key.Address != sanctumRewardwindow.RewardElements.Last().Address
-                    || (x.Key.Address != sanctumRewardwindow.RewardElements.Last().Address && x.Value.Name.Contains("Divine")))
-                        .OrderByDescending(x => x.Value.Value).FirstOrDefault();
-                }
-
-                var otherRewards = rewardValues.Where(x => x.Key.Address != bestReward.Key.Address).Select(x => x.Value)
-                .OrderByDescending(x => x.Value).ToList();
-
-                foreach (var reward in rewardValues)
-                {
-                    var rewardPos = reward.Key.Children[1].GetClientRectCache;
-
-                    if (reward.Key.Address == bestReward.Key.Address)
-                    {
-                        if (!reward.Value.Name.Contains("Divine"))
-                        {
-                            Graphics.DrawBox(rewardPos, Color.DarkGreen);
-                            Graphics.DrawText($"TAKE THIS", rewardPos.Center - new SharpDX.Vector2(0, 7), Color.White, 45, FontAlign.Center);
-                            Graphics.DrawText($"{reward.Value.Count}x {reward.Value.Name}", rewardPos.Center + new SharpDX.Vector2(0, 8), Color.White, 45, FontAlign.Center);
-                        }
-                        else
-                        {
-                            Graphics.DrawBox(rewardPos, Color.Magenta);
-                            Graphics.DrawText($"TAKE THE DIVINES...", rewardPos.Center - new SharpDX.Vector2(0, 7), Color.White, 45, FontAlign.Center);
-                            Graphics.DrawText($"{reward.Value.Count}x {reward.Value.Name}", rewardPos.Center + new SharpDX.Vector2(0, 8), Color.White, 45, FontAlign.Center);
-                        }
-
-                    }
-                    else if (reward.Key.Address != rewardValues.Last().Key.Address)
-                    {
-                        Graphics.DrawBox(rewardPos, Color.DarkRed);
-                        Graphics.DrawText($"DONT TAKE", rewardPos.Center - new SharpDX.Vector2(0, 7), Color.White, 45, FontAlign.Center);
-                        Graphics.DrawText($"{reward.Value.Count}x {reward.Value.Name}", rewardPos.Center + new SharpDX.Vector2(0, 8), Color.White, 45, FontAlign.Center);
-                    }
-                    else
-                    {
-                        Graphics.DrawBox(rewardPos, Color.DarkRed);
-                        Graphics.DrawText($"THIS IS FLOOR {floor}...", rewardPos.Center - new SharpDX.Vector2(0, 10), Color.White, 45, FontAlign.Center);
-                        Graphics.DrawText($"DONT TAKE LAST REWARD", rewardPos.Center + new SharpDX.Vector2(0, 5), Color.White, 45, FontAlign.Center);
-                        Graphics.DrawText($"{reward.Value.Count}x {reward.Value.Name}", rewardPos.Center + new SharpDX.Vector2(0, 20), Color.White, 45, FontAlign.Center);
-                    }
-                }
-            }
-            else if (floor == 4)
-            {
-                bool containsDivines = false;
-                int pactCounter = 0;
-                var roomsByLayer = floorWindow.RoomsByLayer;
-
-                List<(int, int)> path = new List<(int, int)>();
-                if (!dataCalculated)
-                {
-                    pathFinder = new PathFinder(this);
-                    pathFinder.CreateRoomWeightMap(false);
-
-                    path = pathFinder.FindBestPath();
-                }
-                else
-                {
-                    path = this.bestPath;
-                }
-
-                foreach (var room in path)
-                {
-                    if (room.Item1 == pathFinder.playerLayerIndex && room.Item2 == pathFinder.playerRoomIndex) continue;
-
-                    var sanctumRoom = roomsByLayer[room.Item1][room.Item2];
-
-                    if (new[] { sanctumRoom?.Data?.Reward1, sanctumRoom?.Data?.Reward2, sanctumRoom?.Data?.Reward3 }.Any(x => x != null && x.CurrencyName.Contains("Divine")))
-                    {
-                        containsDivines = true;
-                    }
-
-                    if (sanctumRoom.Data?.RewardRoom?.Id?.Contains("_Deal") ?? false)
-                    {
-                        pactCounter++;
-                    }
-                }
-
-                if (!containsDivines)
-                {
-                    //seems to always be index Children[15]
-                    var elements = GameController.IngameState.IngameUi.Children.Where(x => x.ChildCount == 5
-                    && x.Type == (ElementType)7
-                    && x.PositionNum != new Vector2(0, 0)
-                    && x.PathFromRoot == x.IndexInParent.ToString()).ToList();
-
-                    if (elements.Count != 1)
-                        return;
-
-                    var sanctumUi = elements[0];
-                    var currentRewards1 = sanctumUi?.Children[3]?.Children[4]?.Tooltip?.GetChildFromIndices(0, 0, 1);
-                    var currentRewards2 = sanctumUi?.Children[3]?.Children[5]?.Tooltip?.GetChildFromIndices(0, 0, 1);
-                    int currentRewardCount = (int)(currentRewards1?.ChildCount ?? 0) + (int)(currentRewards2?.ChildCount ?? 0);
-
-                    bool inPactRoom = roomsByLayer[pathFinder.playerLayerIndex][pathFinder.playerRoomIndex].Data.RewardRoom.Id.Contains("_Deal");
-                    int rewardsWeCanTake = 2 - currentRewardCount - pactCounter;
-
-                    Graphics.DrawText($"currentRewardCount: {currentRewardCount}\npactCounter: {pactCounter}\nrewardsWeCanTake: {rewardsWeCanTake}\ninPactRoom: {inPactRoom.ToString()}",
-                                sanctumRewardwindow.PositionNum, Color.White, 45, FontAlign.Center);
-
-                    if (rewardsWeCanTake >= 1 && !inPactRoom)
-                    {
-                        var rewards = new List<(List<(int, int)>, int)>();
-
-                        foreach (var step in path)
-                        {
-                            var reward1 = roomsByLayer[step.Item1][step.Item2].Data.Reward1;
-                            var reward2 = roomsByLayer[step.Item1][step.Item2].Data.Reward2;
-                            var reward3 = roomsByLayer[step.Item1][step.Item2].Data.Reward3;
-
-                            if (reward1 != null)
-                            {
-                                int rewardWeight1 = Settings.GetCurrencyWeight(reward1 + "_Now");
-                                int rewardWeight2 = Settings.GetCurrencyWeight(reward2 + "_EndOfFloor");
-                                int rewardWeight3 = Settings.GetCurrencyWeight(reward3 + "_EndOfSanctum");
-                                int maxRewardWeight = Math.Max(Math.Max(rewardWeight1, rewardWeight2), rewardWeight3);
-
-                                rewards.Add((new List<(int, int)> { step }, maxRewardWeight));
-                            }
-                        }
-
-                        rewards = rewards.OrderByDescending(x => x.Item2).Take(rewardsWeCanTake).ToList();
-
-                        foreach (var reward in rewards)
-                        {
-                            SanctumRoomElement room = roomsByLayer[reward.Item1[0].Item1][reward.Item1[0].Item2];
-
-
-                            var playerLayerIndex = pathFinder.playerLayerIndex;
-                            var playerRoomIndex = pathFinder.playerRoomIndex;
-
-                            if (playerLayerIndex == reward.Item1[0].Item1 && playerRoomIndex == reward.Item1[0].Item2)
-                            {
-                                var bestReward = rewardValues.OrderByDescending(x => x.Value.Value).FirstOrDefault();
-
-                                foreach (var rewardValue in rewardValues)
-                                {
-                                    var rewardPos = rewardValue.Key.Children[1].GetClientRectCache;
-
-                                    if (rewardValue.Key.Address == bestReward.Key.Address)
-                                    {
-                                        Graphics.DrawBox(rewardPos, Color.DarkGreen);
-                                        Graphics.DrawText($"TAKE THIS", rewardPos.Center - new SharpDX.Vector2(0, 7), Color.White, 45, FontAlign.Center);
-                                        Graphics.DrawText($"{rewardValue.Value.Count}x {rewardValue.Value.Name}", rewardPos.Center + new SharpDX.Vector2(0, 8), Color.White, 45, FontAlign.Center);
-                                    }
-                                    else
-                                    {
-                                        Graphics.DrawBox(rewardPos, Color.DarkRed);
-                                        Graphics.DrawText($"DONT TAKE", rewardPos.Center - new SharpDX.Vector2(0, 7), Color.White, 45, FontAlign.Center);
-                                        Graphics.DrawText($"{rewardValue.Value.Count}x {rewardValue.Value.Name}", rewardPos.Center + new SharpDX.Vector2(0, 8), Color.White, 45, FontAlign.Center);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    else
-                    {
-                        KeyValuePair<Element, Reward> bestReward = new KeyValuePair<Element, Reward>();
-
-                        if (!inPactRoom)
-                        {
-                            bestReward = rewardValues.Where(x => x.Key.Address == sanctumRewardwindow.RewardElements.First().Address)
-                                .OrderByDescending(x => x.Value.Value).FirstOrDefault();
-                        }
-                        else
-                        {
-                            bestReward = rewardValues.OrderByDescending(x => x.Value.Value).FirstOrDefault();
-                        }
-
-                        foreach (var reward in rewardValues)
-                        {
-                            var rewardPos = reward.Key.Children[1].GetClientRectCache;
-
-                            if (reward.Key.Address == bestReward.Key.Address)
-                            {
-                                Graphics.DrawBox(rewardPos, Color.DarkGreen);
-                                Graphics.DrawText($"TAKE THIS", rewardPos.Center - new SharpDX.Vector2(0, 7), Color.White, 45, FontAlign.Center);
-                                Graphics.DrawText($"{reward.Value.Count}x {reward.Value.Name}", rewardPos.Center + new SharpDX.Vector2(0, 8), Color.White, 45, FontAlign.Center);
-                            }
-                            else
-                            {
-                                Graphics.DrawBox(rewardPos, Color.DarkRed);
-                                Graphics.DrawText($"DONT TAKE", rewardPos.Center - new SharpDX.Vector2(0, 7), Color.White, 45, FontAlign.Center);
-                                Graphics.DrawText($"{reward.Value.Count}x {reward.Value.Name}", rewardPos.Center + new SharpDX.Vector2(0, 8), Color.White, 45, FontAlign.Center);
-                            }
-                        }
-
-                    }
-                }
-            }
+            DrawSelectedRewardsForFloor4(rewardValues, sanctumRewardWindow, floorWindow, path, rewardsWeCanTake);
         }
         else
         {
-            Graphics.DrawText("No Divinity Detected", sanctumRewardwindow.PositionNum - new Vector2(100, 40), Color.White, 45, FontAlign.Center);
-
-            var bestReward = rewardValues.OrderByDescending(x => x.Value.Value).FirstOrDefault();
-
-            var otherRewards = rewardValues.Where(x => x.Key.Address != bestReward.Key.Address).Select(x => x.Value)
-            .OrderByDescending(x => x.Value).ToList();
-
-            foreach (var reward in rewardValues)
+            if (rewardsWeCanTake >= 1 && pactCounter == 0)
             {
-                var rewardPos = reward.Key.Children[1].GetClientRectCache;
-
-                if (reward.Key.Address == bestReward.Key.Address)
-                {
-                    Graphics.DrawBox(rewardPos, Color.DarkGreen);
-                    Graphics.DrawText($"TAKE THIS", rewardPos.Center - new SharpDX.Vector2(0, 7), Color.White, 45, FontAlign.Center);
-                    Graphics.DrawText($"{reward.Value.Count}x {reward.Value.Name} ({reward.Value.Value})", rewardPos.Center + new SharpDX.Vector2(0, 8), Color.White, 45, FontAlign.Center);
-
-                }
-                else if (reward.Key.Address != rewardValues.Last().Key.Address)
-                {
-                    Graphics.DrawBox(rewardPos, Color.DarkRed);
-                    Graphics.DrawText($"DONT TAKE", rewardPos.Center - new SharpDX.Vector2(0, 7), Color.White, 45, FontAlign.Center);
-                    Graphics.DrawText($"{reward.Value.Count}x {reward.Value.Name}", rewardPos.Center + new SharpDX.Vector2(0, 8), Color.White, 45, FontAlign.Center);
-                }
-                else
-                {
-                    Graphics.DrawBox(rewardPos, Color.DarkRed);
-                    Graphics.DrawText($"THIS IS FLOOR {floor}...", rewardPos.Center - new SharpDX.Vector2(0, 10), Color.White, 45, FontAlign.Center);
-                    Graphics.DrawText($"DONT TAKE LAST REWARD", rewardPos.Center + new SharpDX.Vector2(0, 5), Color.White, 45, FontAlign.Center);
-                    Graphics.DrawText($"{reward.Value.Count}x {reward.Value.Name}", rewardPos.Center + new SharpDX.Vector2(0, 20), Color.White, 45, FontAlign.Center);
-                }
+                DrawRewardElements(rewardValues, rewardValues.OrderByDescending(x => x.Value.Value).FirstOrDefault(), sanctumRewardWindow, 4);
+            }
+            else
+            {
+                DrawRewardElements(rewardValues, rewardValues.FirstOrDefault(), sanctumRewardWindow, 4);
             }
         }
     }
+
+    private void DrawRewardsForNoDivinity(Dictionary<Element, Reward> rewardValues, SanctumRewardWindow sanctumRewardWindow, int floor)
+    {
+        var bestReward = GetBestReward(rewardValues, sanctumRewardWindow.RewardElements.Last().Address);
+        DrawRewardElements(rewardValues, bestReward, sanctumRewardWindow, floor);
+    }
+
+    private KeyValuePair<Element, Reward> GetBestReward(Dictionary<Element, Reward> rewardValues, long lastRewardAddress)
+    {
+        return rewardValues.Where(x => x.Key.Address != lastRewardAddress)
+                            .OrderByDescending(x => x.Value.Value).FirstOrDefault();
+    }
+
+    private void DrawRewardElements(Dictionary<Element, Reward> rewardValues, KeyValuePair<Element, Reward> bestReward, SanctumRewardWindow sanctumRewardWindow, int floor)
+    {
+        foreach (var reward in rewardValues)
+        {
+            var rewardPos = reward.Key.Children[1].GetClientRectCache;
+
+            if (reward.Key.Address == bestReward.Key.Address)
+            {
+                DrawBestReward(reward, rewardPos, floor);
+            }
+            else if (reward.Key.Address != sanctumRewardWindow.RewardElements.Last().Address || floor == 4)
+            {
+                DrawNonBestReward(reward, rewardPos);
+            }
+            else
+            {
+                DrawLastReward(reward, rewardPos, floor);
+            }
+        }
+    }
+
+    private void DrawBestReward(KeyValuePair<Element, Reward> reward, RectangleF rewardPos, int floor)
+    {
+        Color boxColor = reward.Value.Name.Contains("Divine Orb") ? Color.Magenta : Color.DarkGreen;
+        string text = reward.Value.Name.Contains("Divine Orb") ? "TAKE THE DIVINES..." : "TAKE THIS";
+
+        Graphics.DrawBox(rewardPos, boxColor);
+        Graphics.DrawText(text, rewardPos.Center - new SharpDX.Vector2(0, 7), Color.White, 45, FontAlign.Center);
+        Graphics.DrawText($"{reward.Value.Count}x {reward.Value.Name} ({reward.Value.Value})", rewardPos.Center + new SharpDX.Vector2(0, 8), Color.White, 45, FontAlign.Center);
+    }
+
+    private void DrawNonBestReward(KeyValuePair<Element, Reward> reward, RectangleF rewardPos)
+    {
+        Graphics.DrawBox(rewardPos, Color.DarkRed);
+        Graphics.DrawText("DONT TAKE", rewardPos.Center - new SharpDX.Vector2(0, 7), Color.White, 45, FontAlign.Center);
+        Graphics.DrawText($"{reward.Value.Count}x {reward.Value.Name}", rewardPos.Center + new SharpDX.Vector2(0, 8), Color.White, 45, FontAlign.Center);
+    }
+
+    private void DrawLastReward(KeyValuePair<Element, Reward> reward, RectangleF rewardPos, int floor)
+    {
+        Graphics.DrawBox(rewardPos, Color.DarkRed);
+        Graphics.DrawText($"THIS IS FLOOR {floor}...", rewardPos.Center - new SharpDX.Vector2(0, 10), Color.White, 45, FontAlign.Center);
+        Graphics.DrawText("DONT TAKE LAST REWARD", rewardPos.Center + new SharpDX.Vector2(0, 5), Color.White, 45, FontAlign.Center);
+        Graphics.DrawText($"{reward.Value.Count}x {reward.Value.Name}", rewardPos.Center + new SharpDX.Vector2(0, 20), Color.White, 45, FontAlign.Center);
+    }
+
+    private KeyValuePair<Element, Reward> DetermineBestRewardForFloor3(Dictionary<Element, Reward> rewardValues, SanctumRewardWindow sanctumRewardWindow, SanctumFloorWindow floorWindow)
+    {
+        if (floorWindow.FloorData.RoomChoices.Count == 8)
+        {
+            if (rewardValues.All(x => !x.Value.Name.Contains("Divine Orb")))
+            {
+                return rewardValues.Where(x => x.Key.Address == sanctumRewardWindow.RewardElements.First().Address)
+                    .OrderByDescending(x => x.Value.Value).FirstOrDefault();
+            }
+            else
+            {
+                return rewardValues.OrderByDescending(x => x.Value.Value).FirstOrDefault();
+            }
+        }
+        
+        return rewardValues.Where(x => x.Key.Address != sanctumRewardWindow.RewardElements.Last().Address
+        || (x.Key.Address == sanctumRewardWindow.RewardElements.Last().Address && x.Value.Name.Contains("Divine Orb")))
+            .OrderByDescending(x => x.Value.Value).FirstOrDefault();
+    }
+
+    private (int divCounter, int pactCounter, List<(int, int)> path, int rewardsWeCanTake) CalculateFloor4Metrics(SanctumFloorWindow floorWindow)
+    {
+        int divCounter = 0;
+        int pactCounter = 0;
+
+        List<(int, int)> path = new List<(int, int)>();
+        if (!dataCalculated)
+        {
+            pathFinder = new PathFinder(this);
+            pathFinder.CreateRoomWeightMap(false);
+
+            path = pathFinder.FindBestPath();
+        }
+        else
+        {
+            path = this.bestPath;
+        }
+
+        foreach (var room in path)
+        {
+            if (IsCurrentPlayerRoom(room, pathFinder)) continue;
+
+            var sanctumRoom = floorWindow.RoomsByLayer[room.Item1][room.Item2];
+
+            if (sanctumRoom?.Data?.RewardRoom?.Id.Contains("_Deal") ?? false)
+            {
+                pactCounter++;
+            }
+
+            if (new[] { sanctumRoom?.Data?.Reward1, sanctumRoom?.Data?.Reward2, sanctumRoom?.Data?.Reward3 }.Any(x => x != null && x.CurrencyName.Contains("Divine Orb")))
+            {
+                divCounter++;
+            }
+        }
+
+        var floorData = RemoteMemoryObject.GetObjectStatic<SanctumFloorData>(floorWindow.FloorData.Address - 0x88);
+        var rewards = floorData.M.ReadStdVectorStride<long>(floorData.M.Read<StdVector>(floorData.Address + 0x70), 0x10)
+            .Select(TheGame.pTheGame.Files.SanctumDeferredRewards.GetByAddressOrReload)
+            .Where(x => x != null).ToList();
+
+
+        int currentRewardCount = rewards.Count(x => x.DeferralCategory.Id.Contains("FinalBoss"));
+
+        int rewardsWeCanTake = 2 - currentRewardCount - pactCounter - divCounter;
+
+        return (divCounter, pactCounter, path, rewardsWeCanTake);
+    }
+
+    private bool IsCurrentPlayerRoom((int, int) room, PathFinder pathFinder)
+    {
+        return (room.Item1 == pathFinder.playerLayerIndex && room.Item2 == pathFinder.playerRoomIndex);
+    }
+
+    private void DrawFloor4InfoText(Vector2 position, int pactCounter, int rewardsWeCanTake, int divCounter)
+    {
+        Graphics.DrawText($"Divines Remaining: {divCounter}", position - new Vector2(160, 0), Color.White, 25, FontAlign.Left);
+        Graphics.DrawText($"Pacts Remaining: {pactCounter}", position - new Vector2(160, -20), Color.White, 25, FontAlign.Left);
+        Graphics.DrawText($"Rewards We Can Take: {rewardsWeCanTake}", position - new Vector2(160, -40), Color.White, 25, FontAlign.Left);
+    }
+
+    private void DrawSelectedRewardsForFloor4(Dictionary<Element, Reward> rewardValues, SanctumRewardWindow sanctumRewardWindow, SanctumFloorWindow floorWindow, List<(int, int)> path, int rewardsWeCanTake)
+    {
+        var selectedRewards = rewardValues.OrderByDescending(x => x.Value.Value)
+                                          .Take(rewardsWeCanTake);
+        if(selectedRewards.Count() == 0)
+        {
+            DrawRewardElements(rewardValues, rewardValues.FirstOrDefault(), sanctumRewardWindow, 4);
+            return;
+        }
+
+        DrawRewardElements(rewardValues, selectedRewards.FirstOrDefault(), sanctumRewardWindow, 4);
+    }
+
+    private void DrawRewardElementsForFloor4(Dictionary<Element, Reward> rewardValues, SanctumRewardWindow sanctumRewardWindow)
+    {
+        foreach (var reward in rewardValues)
+        {
+            var rewardPos = reward.Key.Children[1].GetClientRectCache;
+            Graphics.DrawBox(rewardPos, Color.DarkRed);
+            Graphics.DrawText("DONT TAKE", rewardPos.Center - new SharpDX.Vector2(0, 7), Color.White, 45, FontAlign.Center);
+            Graphics.DrawText($"{reward.Value.Count}x {reward.Value.Name}", rewardPos.Center + new SharpDX.Vector2(0, 8), Color.White, 45, FontAlign.Center);
+        }
+    }
+
 }
 
