@@ -188,10 +188,12 @@ public class BetterSanctumPlugin : BaseSettingsPlugin<BetterSanctumSettings>
         public double Value;
     }
 
+    bool usingDivinity = false;
+
     private void DrawRewards()
     {
         var gameState = GameController.IngameState;
-        bool usingDivinity = gameState.Data.MapStats.Any(x => x.Key.ToString() == "MapLycia2DuplicateUpToXDeferredRewards");
+        usingDivinity = gameState.Data.MapStats.Any(x => x.Key.ToString() == "MapLycia2DuplicateUpToXDeferredRewards");
 
         var sanctumRewardWindow = gameState.IngameUi.SanctumRewardWindow;
         if (!sanctumRewardWindow.IsVisible || sanctumRewardWindow.RewardElements.Count == 0 || sanctumRewardWindow.RewardElements[0].ChildCount >= 3)
@@ -303,7 +305,7 @@ public class BetterSanctumPlugin : BaseSettingsPlugin<BetterSanctumSettings>
         }
         else
         {
-            if (rewardsWeCanTake >= 1 && pactCounter == 0)
+            if (rewardValues.Any(x => x.Value.Name.Contains("Divine Orb")) || rewardsWeCanTake >= 1 && pactCounter == 0)
             {
                 DrawRewardElements(rewardValues, rewardValues.OrderByDescending(x => x.Value.Value).FirstOrDefault(), sanctumRewardWindow, 4);
             }
@@ -316,7 +318,7 @@ public class BetterSanctumPlugin : BaseSettingsPlugin<BetterSanctumSettings>
 
     private void DrawRewardsForNoDivinity(Dictionary<Element, Reward> rewardValues, SanctumRewardWindow sanctumRewardWindow, int floor)
     {
-        var bestReward = GetBestReward(rewardValues, sanctumRewardWindow.RewardElements.Last().Address);
+        var bestReward = rewardValues.OrderByDescending(x => x.Value.Value).FirstOrDefault();
         DrawRewardElements(rewardValues, bestReward, sanctumRewardWindow, floor);
     }
 
@@ -336,7 +338,7 @@ public class BetterSanctumPlugin : BaseSettingsPlugin<BetterSanctumSettings>
             {
                 DrawBestReward(reward, rewardPos, floor);
             }
-            else if (reward.Key.Address != sanctumRewardWindow.RewardElements.Last().Address || floor == 4)
+            else if (reward.Key.Address != sanctumRewardWindow.RewardElements.Last().Address || floor == 4 || !usingDivinity)
             {
                 DrawNonBestReward(reward, rewardPos);
             }
@@ -433,7 +435,7 @@ public class BetterSanctumPlugin : BaseSettingsPlugin<BetterSanctumSettings>
             .Where(x => x != null).ToList();
 
 
-        int currentRewardCount = rewards.Count(x => x.DeferralCategory.Id.Contains("FinalBoss"));
+        int currentRewardCount = rewards.Count(x => x.DeferralCategory.Id.Contains("FinalBoss") || x.DeferralCategory.Id.Contains("RewardFloor"));
 
         int rewardsWeCanTake = 2 - currentRewardCount - pactCounter - divCounter;
 
